@@ -1,0 +1,323 @@
+---
+title: "Final_Report"
+author: "Han Gong (hangong2@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    theme: cosmo
+urlcolor: BrickRed
+---
+
+# Introduction
+With a significant prediction of the sale for different products, grocery stores can distribute the resources more scientifically to maximize the profit and serve customers in a more effective way. The location and the weather plays an important role in customer decisions, which determines the sale in a large extent, so it would be beneficial to have access to those data and build a model to predict sensitive product to improve the business performance for retail stores. 
+
+We are provided sales data for 111 products sold in Walmart, one of the most well-known retail corporations, under variance weather and location conditions. The dataset was originally collected from Walmart and can be accessed through Kaggle. Those products sold in 45 stores are covered by 20 weather stations, and the variables in our data sets are the date, stores, stations(categorical variables), heat, cold, sunset time, sunrise time, etc. (numerical variables)
+
+Our task for this project is building a model to predict the amount of each product sold around the time of major weather events, which means any day in which more than an inch of rain or two inches of snow was observed. In other words, we are asked to predict the units sold for a window of ±3 days surrounding each storm.
+
+In doing so, we will try to do some exploratory Data Analysis, eliminate the useless variables, and create new variables from the presented data. Then, we will merge the weather data with the training data to fit a linear prediction model and use XXX to improve the model. Finally, we will report the polished model and Kaggle score.
+
+***
+
+# Exploratory Data Analysis
+
+After inputting, we merge the three dataset into a combined data set as our actual training data. We first merge "train" data with "key" by store_nbr to match the sales data with station keys, then with "weather" to match the weather conditions.
+
+```{r data combine, echo=FALSE}
+# Load Data
+library(dplyr)
+weather = read.csv("weather.csv")
+key = read.csv("key.csv")
+train = read.csv("train.csv")
+
+# Combine by Keys
+store_match = merge(key,
+                    train,
+                    by = "store_nbr")
+combined = merge(store_match,
+                 weather,
+                 by = c("station_nbr", "date"))
+```
+
+## Units 
+
+Looking into units, which are our response variable, we find the data are strongly skewed to the right as 'r zero_percentage' of the observations does not have a sales volume. The data have a mean of 0.987, a median and 75th percentile number 0, ranging from 0 to 5568. 
+
+The skewed data can lead to low accuracy of the linear model because the violation of normality in the data sample; therefore, further steps on data cleaning are needed before modeling. Due to the large number of zeros, we consider to separate the data into two parts before feeding the training data -- observations with a combination of items/stores numbers are all zeros, and observations with a possibility to have a nonzero sale. Excluding the first part of the observation gives us a better chance to decide if a certain item in a store can be sold or not and make our response variable more balanced.
+
+```{r units,  echo = FALSE, message=FLASE, results='hide'}
+# Graph
+library("ggplot2")
+ggplot(aes(x = units), data = combined) +
+  geom_histogram(fill = 'royalblue2') +
+  xlim(1, 1000) +
+  ggtitle('units')
+```
+
+## Date (Year and Weekend)
+
+### Year
+
+In order to test the effect of Year on sales, we examine the first day of sales for each item by changing the variable type of "data" into the data defined by R using as.Date. Then use for loop to report the first time of non-zero for each item. 
+
+According to the result, some items do not have any sales volume until later 2013 or even 2014. Some possible reason could be that they're not displayed until later years. Therefore, it will be inaccurate if we treated date as one single character variable without separating it into year, month and day.
+
+```{r Year, echo=FALSE}
+# Examine first day of sales for each items
+first_day_sales = rep(-1, 111)
+for (i in 1:111) {
+  list = combined[combined$item_nbr == i,]
+  n = nrow(list)
+  for (j in 1:n) {
+    if (list$units[j] != 0) {
+      first_day_sales[i] = list$date[j]
+      break
+    }
+  }
+}
+
+# First Day of Sales
+qplot(first_day_sales,
+      xlab = "First Day of Sales After 12_01_05",
+      ylab = "Frequency of Items",
+      main = "First Day of Sales")
+```
+
+```{r add year, warning = FALSE, message = FALSE}
+# Change varialbe types
+combined$date = as.Date(combined$date)
+for (i in 3:20) {
+  combined[,i] = as.character(combined[,i])
+}
+
+# Add "year"
+temp = nrow(combined)
+combined[["year"]] = rep(0, temp)
+for (i in 1:temp) {
+  combined$year[i] = substr(combined$date[i], 1, 4)
+}
+combined$year = as.factor(combined$year)
+```
+
+### Season
+
+After separating the date, we continue to test the correlation between season and sales by code the "month" into "quarter". After grouping the data by quarter, we have the difference in mean of weather variables such as tavg, dewpoint, wetbulb and thus conclude season is a valid variable for predicting the sales of weather sensitive products.
+
+```{r season, echo = FALSE}
+# Add "season"
+combined[["quarter"]] = rep(0, temp)
+combined$quarter = quarters(combined$date)
+combined$quarter = as.factor(combined$quarter)
+
+# Season vs Units
+library(dplyr)
+
+combined %>%
+  group_by(quarter) %>%
+  summarise_at(vars(tavg, dewpoint, wetbulb, heat, units), funs(mean(., na.rm=TRUE)))
+```
+
+### Weekend
+To test the effet on weekday/weekend on sales, we create a new chracter variable "weekday". The results shows difference in sales between weekdays and weekends. 
+
+```{r, echo = FALSE}
+# Add "weekday"
+combined[["weekday"]] = rep(0, temp)
+combined$weekday = weekdays(combined$date)
+
+# Week day vs units
+combined %>%
+  group_by(weekend) %>%
+  summarise_at(vars(units), funs(mean(., na.rm=TRUE)))
+```
+
+```{r, echo = FALSE}
+# Change variable type
+combined$weekday = as.factor(combined$weekday)
+```
+
+## Variable "sunrise", "sunset", add "daytime"
+
+To matter better sence of the variable sunrises and sunset, we create a new varible daytime using the difference between sunrise time and sunset. However, we fianlly decide to not include this varible for two reasons: daytime varible has high collinearity with other variables, for example, season, and there're lots of missing values for this record.
+
+```{r sunrise & sunset, echo = FALSE}
+# Change "sunrise" and "sunset" to minutes from 00:00
+data$sunrise = as.character(data$sunrise)
+data$sunset = as.character(data$sunset)
+for (i in 1:temp) {
+  if (nchar(data$sunrise[i]) == 4 && nchar(data$sunset[i]) == 4) {
+    data$sunrise[i] = as.numeric(substr(data$sunrise[i], 1, 2))*60 + as.numeric(substr(data$sunrise[i], 3, 4))
+    data$sunset[i] = as.numeric(substr(data$sunset[i], 1, 2))*60 + as.numeric(substr(data$sunset[i], 3, 4))
+  }
+}
+
+# Add "daytime" (sunset - sunrise, in minutes)
+data[["daytime"]] = rep(NA, temp)
+for (i in 1:temp) {
+  if (nchar(data$sunrise[i]) >= 3 && nchar(data$sunset[i]) >= 3) {
+    data$daytime[i] = as.numeric(data$sunset[i]) - as.numeric(data$sunrise[i])
+  }
+}
+```
+
+## Missing data 
+
+
+## Interaction
+
+***
+
+# Linear Regression Model
+
+## Diagnosis 
+
+Our initial full linear model has lots of things to improve according to the diagnosis. This scale-location plot shows residuals are not spread equally along the ranges of predictors. There’s not a horizontal line with equally spread points, suggesting constant variances in the residuals errors (or heteroscedasticity) is violated.
+
+The QQ plot of residuals can be used to visually check the normality assumption. The normal probability plot of residuals should approximately follow a straight line. In this graph, the points on the curve do not fall in a straight line with an significant concave up curve in the end. Thus, strong evidence on violation of normality is shown.
+
+According to the 3rd diagnosis graph and our calculation on large leverage points using a threshold of 2p/n, there's more than 8000 points with large leverage. Using the cook's distance, we are able to detect 6000 of influential points and with student resitual, we check for the oulier with a treshold of 3 and get 6000+ outliers.
+
+```{r}
+# Check for normality/constant variance assumption for the errors
+par(mfrow = c(2, 2))
+plot(model_2_full)
+
+# Check for large leverage points
+p = ncol(data_train_2)
+n = nrow(data_train_2)
+lev = hatvalues(model_2_full)
+large_lev = lev[(lev > 2 * p / n)]
+
+# Check for influential point
+cooks.distance(model_2_full)[cooks.distance(model_2_full) > n / 4]
+
+# Check for outliers
+student.res = rstandard(model_2_full)
+outlier = which(student.res[abs(student.res) > 3])
+```
+
+***
+
+# Improvement 
+
+## Boxcox Transformation
+
+According to the result of diagnosis, we know there's a problem with normality in the original model. Box Cox transformation is a way to transform non-normal dependent variables into a normal shape.
+
+We first apply boxcox transformation to corret the normality and get a lambda of -1/2 using boxcox transformation. Since there're zeros in the response varibale, we use units+1 instead of units as the response varible so we have make the transformation. The dignosis shows strong evidence of improvement on normality but other problems remian the same.
+
+```{r boxcox transformation}
+# install.packages("MASS")
+library("MASS")
+boxcox(model_2_full)
+model_trans = lm(((units + 1) ^ (-1 / 2) - 1) / (-1 / 2) ~ ., data = data_train_2)
+
+# Diagnosis
+plot(model_trans)
+```
+
+## Stepwise Selection
+
+Since there're existing a large group pof varibles with interactions, we decide to run a step selection to provide an initial screening of the candidate variables. In this case, we try both AIC backward and BIC backward. The result elimate most of the weather varibles while indicating item_nbr and date, especially weekday/weekend as most important varibles. While this step does not give a significant improvement on model accurancy but it does provide us insights on working on dates and item_nbr for our final model. 
+
+```{r stepwise selection}
+aic_backward = step(model_2_full, trace = 0)
+bic_backward = step(model_2_full, trace = 0, k = log(n))
+```
+
+## Interaction
+
+According to the EDA we conduct previously, there're lots of interactions between varibles. 
+
+```{r interaction}
+model_inter = lm(units ~ .^2, data = data_train_2)
+```
+
+
+## Glm with Shrinkage
+
+The generalized linear model (GLM) allows for response variables that have error distribution models other than a normal distribution, which is a appropriate choice in this case since we know our full linear model does meet the normality and constance of varience assumption. To aviod over-fitting due to the highly skewed data, we also want to apply shrinkage to the glm. The lasso-regression model is fitted by calling the glmnet function with `alpha = 1` . In this case, we assume the best model after shrinkage is the model with lambda.1se.
+
+```{r glm with shrinkage}
+library(glmnet)
+trn_x = model.matrix((units) ~ ., data_train_2)
+tst_x = model.matrix((units) ~ ., data_test_2)
+model_glm = glmnet(x = trn_x,
+                   y = data_train_2$units,
+                   alpha = 1)
+```
+
+## Random Forest
+
+Besides linear model, two other models are used in this study -- Random forest and boosted_model.
+
+```{r}
+
+```
+
+## Boosted_Model
+
+```{r Boosted_Model}
+Boosted_Model = train(
+  units ~ .,
+  data_train_2,
+  method = "gbm",
+  trControl = trainControl(method = "repeatedcv",
+                           number = 5)
+)
+```
+
+## Result Comparsion
+
+Acoording to the results, although linear regression with interaction serves the best linear model, it still has relatively high RMSE with the cross-validation. The best model we create is Random Forest. 
+
+```{r RMSLE TEST}
+RMSLE = function(model)
+{
+  prediction = predict(model, data_test_2)
+  for (i in 1:length(prediction)) {
+    if(prediction[i] < 0){
+      prediction[i] = 0
+    }
+  }  
+  sqrt(mean((log(prediction + 1) - log(data_test_2$units + 1))^2))
+}
+
+RMSLE(mod_rf)
+RMSLE(model_2_full)
+RMSLE(aic_backward)
+RMSLE(bic_backward)
+RMSLE(model_inter)
+
+RMSLE_GLM = function(model)
+{
+  prediction = predict(model, tst_x)
+  for (i in 1:length(prediction)) {
+    if(prediction[i] < 0){
+      prediction[i] = 0
+    }
+  }  
+  sqrt(mean((log(prediction + 1) - log(data_test_2$units + 1))^2))
+}
+
+RMSLE_GLM(model_glm)
+```
+
+```{r result_table}
+results = tibble(
+  "Model" = c("Random Forest", "full", "AIC", "BIC", "Interaction","GLM"),
+  "RMSE" = c(
+    RMSLE(mod_rf),
+    RMSLE(model_2_full),
+    RMSLE(aic_backward),
+    RMSLE(bic_backward),
+    RMSLE(model_inter),
+    RMSLE_GLM(model_glm)
+)
+)
+```
+
+
+
